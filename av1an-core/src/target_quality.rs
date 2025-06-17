@@ -1,10 +1,15 @@
-use std::fmt;
-use std::{cmp, cmp::Ordering, collections::HashSet, path::PathBuf, thread::available_parallelism};
-
 use clap::ValueEnum;
 use ffmpeg::format::Pixel;
 use serde::{Deserialize, Serialize};
 use splines::{Interpolation, Key, Spline};
+use std::{
+    cmp,
+    cmp::Ordering,
+    collections::HashSet,
+    fmt::{self, Write},
+    path::PathBuf,
+    thread::available_parallelism,
+};
 use tracing::{debug, trace};
 
 use crate::{
@@ -665,35 +670,70 @@ pub fn log_final_summary(
     final_score: f64,
     stop_reason: SkipProbingReason,
 ) {
-    println!("\n==================================================");
-    println!(" Chunk Analysis Report: {}", chunk_name);
-    println!(" Target VMAF Quality: {:.3}", target_vmaf);
-    println!("--------------------------------------------------");
-    println!(" Probing Path:");
+    use crate::progress_bar::println_above_progress_bar;
+
+    // 创建一个可变字符串来构建整个报告
+    let mut report = String::new();
+
+    // 使用 writeln! 宏将所有内容写入字符串中
+    // .unwrap() 在这里是安全的，因为向String写入不会失败
+    writeln!(
+        report,
+        "\n=================================================="
+    )
+    .unwrap();
+    writeln!(report, " Chunk Analysis Report: {}", chunk_name).unwrap();
+    writeln!(report, " Target VMAF Quality: {:.3}", target_vmaf).unwrap();
+    writeln!(report, "--------------------------------------------------").unwrap();
+    writeln!(report, " Probing Path:").unwrap();
     for (i, (q, method, score)) in history.iter().enumerate() {
-        println!(
+        writeln!(
+            report,
             "  Probe {:>2}: Q={:<2} -> VMAF={:<7.3} (Predicted by: {})",
             i + 1,
             q,
             score,
             method
-        );
+        )
+        .unwrap();
     }
-    println!("--------------------------------------------------");
-    print!(" Stop Reason: ");
+    writeln!(report, "--------------------------------------------------").unwrap();
+    write!(report, " Stop Reason: ").unwrap();
     match stop_reason {
-        SkipProbingReason::None => println!("Converged (a previously tested Q was predicted)"),
-        SkipProbingReason::QuantizerTooHigh => {
-            println!("Early Exit (Quantizer range exhausted, score is too low)")
+        SkipProbingReason::None => {
+            writeln!(report, "Converged (a previously tested Q was predicted)").unwrap()
         },
-        SkipProbingReason::QuantizerTooLow => {
-            println!("Early Exit (Quantizer range exhausted, score is too high)")
+        SkipProbingReason::QuantizerTooHigh => writeln!(
+            report,
+            "Early Exit (Quantizer range exhausted, score is too low)"
+        )
+        .unwrap(),
+        SkipProbingReason::QuantizerTooLow => writeln!(
+            report,
+            "Early Exit (Quantizer range exhausted, score is too high)"
+        )
+        .unwrap(),
+        SkipProbingReason::WithinTolerance => {
+            writeln!(report, "Success (Score is within tolerance)").unwrap()
         },
-        SkipProbingReason::WithinTolerance => println!("Success (Score is within tolerance)"),
-        SkipProbingReason::ProbeLimitReached => println!("Stopped (Probe limit reached)"),
+        SkipProbingReason::ProbeLimitReached => {
+            writeln!(report, "Stopped (Probe limit reached)").unwrap()
+        },
     }
-    println!(" Final Selection: Q={} (VMAF: {:.3})", final_q, final_score);
-    println!("==================================================\n");
+    writeln!(
+        report,
+        " Final Selection: Q={} (VMAF: {:.3})",
+        final_q, final_score
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "==================================================\n"
+    )
+    .unwrap();
+
+    // 使用新函数一次性、安全地打印整个报告
+    println_above_progress_bar(&report);
 }
 
 #[inline]

@@ -1,12 +1,7 @@
 use std::{fmt::Write, time::Duration};
 
 use indicatif::{
-    HumanBytes,
-    HumanDuration,
-    MultiProgress,
-    ProgressBar,
-    ProgressDrawTarget,
-    ProgressState,
+    HumanBytes, HumanDuration, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressState,
     ProgressStyle,
 };
 use once_cell::sync::OnceCell;
@@ -250,6 +245,22 @@ pub fn init_multi_progress_bar(len: u64, workers: usize, resume_frames: u64, chu
 
         (mpb, pbs)
     });
+}
+
+/// Safely prints a message above any active progress bars.
+/// It handles both single-bar and multi-bar modes, falling back to standard println
+/// if no progress bar is active.
+pub fn println_above_progress_bar(msg: &str) {
+    if let Some((mpb, _)) = MULTI_PROGRESS_BAR.get() {
+        // Using MultiProgress's println method
+        let _ = mpb.println(msg);
+    } else if let Some(pb) = PROGRESS_BAR.get() {
+        // Using a single ProgressBar's println method
+        pb.println(msg);
+    } else {
+        // Fallback if no progress bar is initialized
+        println!("{msg}");
+    }
 }
 
 pub fn update_mp_chunk(worker_idx: usize, chunk: usize, padding: usize) {
