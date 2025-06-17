@@ -7,7 +7,7 @@ use std::{
     fs,
     fs::File,
     hash::{Hash, Hasher},
-    io::Write,
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     string::ToString,
     sync::atomic::{AtomicBool, AtomicUsize},
@@ -22,6 +22,7 @@ use av1_grain::TransferFunction;
 use av_format::rational::Rational64;
 use chunk::Chunk;
 use dashmap::DashMap;
+use fs2::FileExt;
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, FromRepr, IntoStaticStr};
@@ -59,7 +60,7 @@ mod vmaf;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Input {
     VapourSynth {
-        path:        PathBuf,
+        path: PathBuf,
         vspipe_args: Vec<String>,
     },
     Video {
@@ -73,12 +74,8 @@ impl Input {
     #[inline]
     pub fn as_video_path(&self) -> &Path {
         match &self {
-            Input::Video {
-                path,
-            } => path.as_ref(),
-            Input::VapourSynth {
-                ..
-            } => {
+            Input::Video { path } => path.as_ref(),
+            Input::VapourSynth { .. } => {
                 panic!("called `Input::as_video_path()` on an `Input::VapourSynth` variant")
             },
         }
@@ -89,12 +86,8 @@ impl Input {
     #[inline]
     pub fn as_vapoursynth_path(&self) -> &Path {
         match &self {
-            Input::VapourSynth {
-                path, ..
-            } => path.as_ref(),
-            Input::Video {
-                ..
-            } => {
+            Input::VapourSynth { path, .. } => path.as_ref(),
+            Input::Video { .. } => {
                 panic!("called `Input::as_vapoursynth_path()` on an `Input::Video` variant")
             },
         }
@@ -109,12 +102,7 @@ impl Input {
     #[inline]
     pub fn as_path(&self) -> &Path {
         match &self {
-            Input::Video {
-                path,
-            }
-            | Input::VapourSynth {
-                path, ..
-            } => path.as_ref(),
+            Input::Video { path } | Input::VapourSynth { path, .. } => path.as_ref(),
         }
     }
 
@@ -132,9 +120,7 @@ impl Input {
     pub fn frames(&self, vs_script_path: Option<PathBuf>) -> anyhow::Result<usize> {
         const FAIL_MSG: &str = "Failed to get number of frames for input video";
         Ok(match &self {
-            Input::Video {
-                path,
-            } if vs_script_path.is_none() => {
+            Input::Video { path } if vs_script_path.is_none() => {
                 ffmpeg::num_frames(path.as_path()).map_err(|_| anyhow::anyhow!(FAIL_MSG))?
             },
             path => vapoursynth::num_frames(
@@ -149,15 +135,13 @@ impl Input {
     pub fn frame_rate(&self) -> anyhow::Result<Rational64> {
         const FAIL_MSG: &str = "Failed to get frame rate for input video";
         Ok(match &self {
-            Input::Video {
-                path,
-            } => {
+            Input::Video { path } => {
                 crate::ffmpeg::frame_rate(path.as_path()).map_err(|_| anyhow::anyhow!(FAIL_MSG))?
             },
-            Input::VapourSynth {
-                path, ..
-            } => vapoursynth::frame_rate(path.as_path(), self.as_vspipe_args_map()?)
-                .map_err(|_| anyhow::anyhow!(FAIL_MSG))?,
+            Input::VapourSynth { path, .. } => {
+                vapoursynth::frame_rate(path.as_path(), self.as_vspipe_args_map()?)
+                    .map_err(|_| anyhow::anyhow!(FAIL_MSG))?
+            },
         })
     }
 
@@ -165,13 +149,13 @@ impl Input {
     pub fn resolution(&self) -> anyhow::Result<(u32, u32)> {
         const FAIL_MSG: &str = "Failed to get resolution for input video";
         Ok(match self {
-            Input::VapourSynth {
-                path, ..
-            } => crate::vapoursynth::resolution(path, self.as_vspipe_args_map()?)
-                .map_err(|_| anyhow::anyhow!(FAIL_MSG))?,
-            Input::Video {
-                path,
-            } => crate::ffmpeg::resolution(path).map_err(|_| anyhow::anyhow!(FAIL_MSG))?,
+            Input::VapourSynth { path, .. } => {
+                crate::vapoursynth::resolution(path, self.as_vspipe_args_map()?)
+                    .map_err(|_| anyhow::anyhow!(FAIL_MSG))?
+            },
+            Input::Video { path } => {
+                crate::ffmpeg::resolution(path).map_err(|_| anyhow::anyhow!(FAIL_MSG))?
+            },
         })
     }
 
@@ -179,13 +163,11 @@ impl Input {
     pub fn pixel_format(&self) -> anyhow::Result<String> {
         const FAIL_MSG: &str = "Failed to get pixel format for input video";
         Ok(match self {
-            Input::VapourSynth {
-                path, ..
-            } => crate::vapoursynth::pixel_format(path, self.as_vspipe_args_map()?)
-                .map_err(|_| anyhow::anyhow!(FAIL_MSG))?,
-            Input::Video {
-                path,
-            } => {
+            Input::VapourSynth { path, .. } => {
+                crate::vapoursynth::pixel_format(path, self.as_vspipe_args_map()?)
+                    .map_err(|_| anyhow::anyhow!(FAIL_MSG))?
+            },
+            Input::Video { path } => {
                 let fmt =
                     crate::ffmpeg::get_pixel_format(path).map_err(|_| anyhow::anyhow!(FAIL_MSG))?;
                 format!("{fmt:?}")
@@ -196,9 +178,7 @@ impl Input {
     fn transfer_function(&self) -> anyhow::Result<TransferFunction> {
         const FAIL_MSG: &str = "Failed to get transfer characteristics for input video";
         Ok(match self {
-            Input::VapourSynth {
-                path, ..
-            } => {
+            Input::VapourSynth { path, .. } => {
                 match crate::vapoursynth::transfer_characteristics(path, self.as_vspipe_args_map()?)
                     .map_err(|_| anyhow::anyhow!(FAIL_MSG))?
                 {
@@ -206,9 +186,7 @@ impl Input {
                     _ => TransferFunction::BT1886,
                 }
             },
-            Input::Video {
-                path,
-            } => {
+            Input::Video { path } => {
                 match crate::ffmpeg::transfer_characteristics(path)
                     .map_err(|_| anyhow::anyhow!(FAIL_MSG))?
                 {
@@ -269,12 +247,8 @@ impl Input {
     #[inline]
     pub fn as_vspipe_args_vec(&self) -> Result<Vec<String>, anyhow::Error> {
         match self {
-            Input::VapourSynth {
-                vspipe_args, ..
-            } => Ok(vspipe_args.to_owned()),
-            Input::Video {
-                ..
-            } => Ok(vec![]),
+            Input::VapourSynth { vspipe_args, .. } => Ok(vspipe_args.to_owned()),
+            Input::Video { .. } => Ok(vec![]),
         }
     }
 
@@ -306,21 +280,17 @@ impl<P: AsRef<Path> + Into<PathBuf>> From<(P, Vec<String>)> for Input {
                     vspipe_args,
                 }
             } else {
-                Self::Video {
-                    path: path.into()
-                }
+                Self::Video { path: path.into() }
             }
         } else {
-            Self::Video {
-                path: path.into()
-            }
+            Self::Video { path: path.into() }
         }
     }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy)]
 struct DoneChunk {
-    frames:     usize,
+    frames: usize,
     size_bytes: u64,
 }
 
@@ -328,8 +298,8 @@ struct DoneChunk {
 /// encode
 #[derive(Debug, Deserialize, Serialize)]
 struct DoneJson {
-    frames:     AtomicUsize,
-    done:       DashMap<String, DoneChunk>,
+    frames: AtomicUsize,
+    done: DashMap<String, DoneChunk>,
     audio_done: AtomicBool,
 }
 
@@ -540,6 +510,62 @@ pub enum ProbingStatisticName {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ProbingStatistic {
-    pub name:  ProbingStatisticName,
+    pub name: ProbingStatisticName,
     pub value: Option<f64>,
+}
+
+/// Thread-safely updates a single chunk's data in the chunks.json file.
+pub fn save_single_chunk_update(
+    temp_dir: &str,
+    updated_chunk: &crate::Chunk,
+) -> anyhow::Result<()> {
+    let chunks_path = Path::new(temp_dir).join("chunks.json");
+
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&chunks_path)
+        .with_context(|| format!("Failed to open chunks.json at {:?}", chunks_path))?;
+
+    file.lock_exclusive()
+        .context("Failed to acquire exclusive lock on chunks.json")?;
+
+    let mut content = String::new();
+    file.read_to_string(&mut content)?; // 直接在锁定的文件上读取
+
+    let mut chunks: Vec<crate::Chunk> = if content.trim().is_empty() {
+        Vec::new()
+    } else {
+        serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse chunks.json content: '{}'", content))?
+    };
+
+    let mut chunk_found = false;
+    if let Some(chunk_to_update) = chunks.iter_mut().find(|c| c.index == updated_chunk.index) {
+        chunk_to_update.probe_history = updated_chunk.probe_history.clone();
+        chunk_to_update.tq_cq = updated_chunk.tq_cq;
+        chunk_found = true;
+    }
+
+    if !chunk_found {
+        tracing::warn!(
+            "Chunk {} not found in chunks.json. Appending it.",
+            updated_chunk.index
+        );
+        chunks.push(updated_chunk.clone());
+        chunks.sort_by_key(|c| c.index);
+    }
+
+    let new_content =
+        serde_json::to_string_pretty(&chunks).context("Failed to serialize chunks for update")?;
+
+    file.seek(SeekFrom::Start(0))
+        .context("Failed to seek to start of chunks.json")?;
+    file.set_len(new_content.len() as u64)
+        .context("Failed to truncate/resize chunks.json")?;
+    file.write_all(new_content.as_bytes())
+        .context("Failed to write updated content to chunks.json")?;
+
+    Ok(())
 }

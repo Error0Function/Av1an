@@ -13,8 +13,7 @@ use std::{
     process::{exit, Command, Stdio},
     sync::{
         atomic::{self, AtomicBool, AtomicUsize},
-        mpsc,
-        Arc,
+        mpsc, Arc,
     },
     thread,
     thread::available_parallelism,
@@ -36,48 +35,29 @@ use crate::{
     broker::{Broker, EncoderCrash},
     chunk::Chunk,
     concat::{self, ConcatMethod},
-    create_dir,
-    determine_workers,
+    create_dir, determine_workers,
     ffmpeg::{compose_ffmpeg_pipe, num_frames},
-    get_done,
-    init_done,
-    into_vec,
+    get_done, init_done, into_vec,
     progress_bar::{
-        finish_progress_bar,
-        inc_bar,
-        inc_mp_bar,
-        init_multi_progress_bar,
-        init_progress_bar,
-        reset_bar_at,
-        reset_mp_bar_at,
-        set_audio_size,
-        update_mp_chunk,
-        update_mp_msg,
+        finish_progress_bar, inc_bar, inc_mp_bar, init_multi_progress_bar, init_progress_bar,
+        reset_bar_at, reset_mp_bar_at, set_audio_size, update_mp_chunk, update_mp_msg,
         update_progress_bar_estimates,
     },
-    read_chunk_queue,
-    save_chunk_queue,
+    read_chunk_queue, save_chunk_queue,
     scene_detect::av_scenechange_detect,
     scenes::{Scene, ZoneOptions},
     settings::{EncodeArgs, InputPixelFormat},
     split::{extra_splits, segment, write_scenes_to_file},
     vapoursynth::{copy_vs_file, create_vs_file},
-    vmaf,
-    ChunkMethod,
-    ChunkOrdering,
-    DashMap,
-    DoneJson,
-    Input,
-    SplitMethod,
-    Verbosity,
+    vmaf, ChunkMethod, ChunkOrdering, DashMap, DoneJson, Input, SplitMethod, Verbosity,
 };
 
 #[derive(Debug)]
 pub struct Av1anContext {
-    pub frames:        usize,
-    pub vs_script:     Option<PathBuf>,
+    pub frames: usize,
+    pub vs_script: Option<PathBuf>,
     pub vs_scd_script: Option<PathBuf>,
-    pub args:          EncodeArgs,
+    pub args: EncodeArgs,
 }
 
 impl Av1anContext {
@@ -165,8 +145,8 @@ impl Av1anContext {
             init_done(done);
         } else {
             init_done(DoneJson {
-                frames:     AtomicUsize::new(0),
-                done:       DashMap::new(),
+                frames: AtomicUsize::new(0),
+                done: DashMap::new(),
                 audio_done: AtomicBool::new(false),
             });
 
@@ -423,9 +403,10 @@ impl Av1anContext {
                     self.args.vmaf_res.clone()
                 };
 
-                let vmaf_model = self.args.vmaf_path.as_deref().or_else(|| {
-                    self.args.target_quality.as_ref().and_then(|tq| tq.model.as_deref())
-                });
+                let vmaf_model_string: Option<&str> =
+                    self.args.vmaf_path.as_deref().or_else(|| {
+                        self.args.target_quality.as_ref().and_then(|tq| tq.model.as_deref())
+                    });
                 let vmaf_scaler = "bicubic";
                 let vmaf_filter = self.args.vmaf_filter.as_deref().or_else(|| {
                     self.args.target_quality.as_ref().and_then(|tq| tq.vmaf_filter.as_deref())
@@ -437,7 +418,7 @@ impl Av1anContext {
                     if let Err(e) = vmaf::plot(
                         self.args.output_file.as_ref(),
                         &self.args.input,
-                        vmaf_model,
+                        vmaf_model_string,
                         &vmaf_res,
                         vmaf_scaler,
                         1,
@@ -573,18 +554,14 @@ impl Av1anContext {
                 let (y4m_pipe, source_pipe_stderr, mut ffmpeg_pipe_stderr) =
                     if self.args.ffmpeg_filter_args.is_empty() {
                         match &self.args.input_pix_format {
-                            InputPixelFormat::FFmpeg {
-                                format,
-                            } => {
+                            InputPixelFormat::FFmpeg { format } => {
                                 if self.args.output_pix_format.format == *format {
                                     (source_pipe_stdout, source_pipe_stderr, None)
                                 } else {
                                     create_ffmpeg_pipe(source_pipe_stdout, source_pipe_stderr)
                                 }
                             },
-                            InputPixelFormat::VapourSynth {
-                                bit_depth,
-                            } => {
+                            InputPixelFormat::VapourSynth { bit_depth } => {
                                 if self.args.output_pix_format.bit_depth == *bit_depth {
                                     (source_pipe_stdout, source_pipe_stderr, None)
                                 } else {
@@ -695,11 +672,11 @@ impl Av1anContext {
         if !enc_output.status.success() {
             return Err((
                 Box::new(EncoderCrash {
-                    exit_status:        enc_output.status,
+                    exit_status: enc_output.status,
                     source_pipe_stderr: source_pipe_stderr.into(),
                     ffmpeg_pipe_stderr: ffmpeg_pipe_stderr.map(Into::into),
-                    stderr:             enc_stderr.into(),
-                    stdout:             enc_output.stdout.into(),
+                    stderr: enc_stderr.into(),
+                    stdout: enc_output.stdout.into(),
                 }),
                 frame,
             ));
@@ -729,11 +706,11 @@ impl Av1anContext {
             if let Some(err_str) = err_str {
                 return Err((
                     Box::new(EncoderCrash {
-                        exit_status:        enc_output.status,
+                        exit_status: enc_output.status,
                         source_pipe_stderr: source_pipe_stderr.into(),
                         ffmpeg_pipe_stderr: ffmpeg_pipe_stderr.map(Into::into),
-                        stderr:             enc_stderr.into(),
-                        stdout:             err_str.into(),
+                        stderr: enc_stderr.into(),
+                        stdout: err_str.into(),
                     }),
                     frame,
                 ));
@@ -745,9 +722,7 @@ impl Av1anContext {
 
     fn create_encoding_queue(&self, scenes: &[Scene]) -> anyhow::Result<Vec<Chunk>> {
         let mut chunks = match &self.args.input {
-            Input::Video {
-                ..
-            } => match self.args.chunk_method {
+            Input::Video { .. } => match self.args.chunk_method {
                 ChunkMethod::FFMS2
                 | ChunkMethod::LSMASH
                 | ChunkMethod::DGDECNV
@@ -759,9 +734,7 @@ impl Av1anContext {
                 ChunkMethod::Select => self.create_video_queue_select(scenes),
                 ChunkMethod::Segment => self.create_video_queue_segment(scenes)?,
             },
-            Input::VapourSynth {
-                path, ..
-            } => self.create_video_queue_vs(scenes, path.as_path()),
+            Input::VapourSynth { path, .. } => self.create_video_queue_vs(scenes, path.as_path()),
         };
 
         match self.args.chunk_order {
@@ -789,7 +762,7 @@ impl Av1anContext {
         let input = self.vs_scd_script.as_ref().map_or_else(
             || self.args.input.clone(),
             |vs_script| Input::VapourSynth {
-                path:        vs_script.clone(),
+                path: vs_script.clone(),
                 vspipe_args: Vec::new(),
             },
         );
@@ -815,8 +788,8 @@ impl Av1anContext {
 
                     if end_frame > frames_processed {
                         scenes.push(Scene {
-                            start_frame:    frames_processed,
-                            end_frame:      zone.start_frame,
+                            start_frame: frames_processed,
+                            end_frame: zone.start_frame,
                             zone_overrides: None,
                         });
                     }
@@ -827,8 +800,8 @@ impl Av1anContext {
                 }
                 if self.frames > frames_processed {
                     scenes.push(Scene {
-                        start_frame:    frames_processed,
-                        end_frame:      self.frames,
+                        start_frame: frames_processed,
+                        end_frame: self.frames,
                         zone_overrides: None,
                     });
                 }
@@ -977,14 +950,12 @@ impl Av1anContext {
             noise_size: self.args.photon_noise_size,
             tq_cq: None,
             ignore_frame_mismatch: self.args.ignore_frame_mismatch,
+            probe_history: None,
         };
         chunk.apply_photon_noise_args(
             overrides.map_or(self.args.photon_noise, |ovr| ovr.photon_noise),
             self.args.chroma_noise,
         )?;
-        if let Some(ref tq) = self.args.target_quality {
-            tq.per_shot_target_quality_routine(&mut chunk, None)?;
-        }
         Ok(chunk)
     }
 
@@ -1017,7 +988,7 @@ impl Av1anContext {
             temp: self.args.temp.clone(),
             index,
             input: Input::VapourSynth {
-                path:        vs_script.to_path_buf(),
+                path: vs_script.to_path_buf(),
                 vspipe_args: self.args.input.as_vspipe_args_vec()?,
             },
             source_cmd: vspipe_cmd_gen,
@@ -1034,6 +1005,7 @@ impl Av1anContext {
             noise_size: self.args.photon_noise_size,
             tq_cq: None,
             ignore_frame_mismatch: self.args.ignore_frame_mismatch,
+            probe_history: None,
         };
         chunk.apply_photon_noise_args(
             scene
@@ -1218,6 +1190,7 @@ impl Av1anContext {
             noise_size: self.args.photon_noise_size,
             tq_cq: None,
             ignore_frame_mismatch: self.args.ignore_frame_mismatch,
+            probe_history: None,
         };
         chunk.apply_photon_noise_args(
             overrides.map_or(self.args.photon_noise, |ovr| ovr.photon_noise),

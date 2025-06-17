@@ -1,24 +1,21 @@
 use std::{
     cmp::Ordering,
     collections::HashMap,
+    env,
     ffi::OsStr,
     path::Path,
     process::{Command, Stdio},
 };
 
 use anyhow::{anyhow, Context};
+use pathdiff;
 use plotters::prelude::*;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 use crate::{
-    broker::EncoderCrash,
-    ffmpeg,
-    ref_smallvec,
-    util::printable_base10_digits,
-    Input,
-    ProbingStatistic,
-    ProbingStatisticName,
+    broker::EncoderCrash, ffmpeg, ref_smallvec, util::printable_base10_digits, Input,
+    ProbingStatistic, ProbingStatisticName,
 };
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -38,7 +35,7 @@ struct VmafResult {
 
 pub struct MetricStatistics {
     scores: Vec<f64>,
-    cache:  HashMap<String, f64>,
+    cache: HashMap<String, f64>,
 }
 
 impl MetricStatistics {
@@ -238,7 +235,7 @@ pub fn validate_libvmaf() -> anyhow::Result<()> {
 pub fn plot(
     encoded: &Path,
     reference: &Input,
-    model: Option<impl AsRef<Path>>,
+    model: Option<&str>,
     res: &str,
     scaler: &str,
     sample_rate: usize,
@@ -252,20 +249,13 @@ pub fn plot(
     println!(":: VMAF Run");
 
     let pipe_cmd: SmallVec<[&OsStr; 8]> = match reference {
-        Input::Video {
-            ref path,
-        } => {
+        Input::Video { ref path } => {
             vspipe_args = vec![];
-            ref_smallvec!(OsStr, 8, [
-                "ffmpeg",
-                "-i",
-                path,
-                "-strict",
-                "-1",
-                "-f",
-                "yuv4mpegpipe",
-                "-"
-            ])
+            ref_smallvec!(
+                OsStr,
+                8,
+                ["ffmpeg", "-i", path, "-strict", "-1", "-f", "yuv4mpegpipe", "-"]
+            )
         },
         Input::VapourSynth {
             ref path,
@@ -301,7 +291,7 @@ pub fn run_vmaf(
     reference_pipe_cmd: &[impl AsRef<OsStr>],
     vspipe_args: Vec<String>,
     stat_file: impl AsRef<Path>,
-    model: Option<impl AsRef<Path>>,
+    model: Option<&str>,
     res: &str,
     scaler: &str,
     sample_rate: usize,
@@ -326,38 +316,49 @@ pub fn run_vmaf(
         filter.push(',');
     }
 
-    let vmaf = if let Some(model) = model {
-        let model_path = if model.as_ref().as_os_str() == "vmaf_v0.6.1neg.json" {
-            format!(
-                "version=vmaf_v0.6.1neg{}",
-                if disable_motion {
-                    "\\:motion.motion_force_zero=true"
-                } else {
-                    ""
-                }
-            )
-        } else {
-            format!("path={}", ffmpeg::escape_path_in_filter(&model))
-        };
-        format!(
-            "[distorted][ref]libvmaf=log_fmt='json':eof_action=endall:log_path={}:model='{}':\
-             n_threads={}",
-            ffmpeg::escape_path_in_filter(stat_file),
-            model_path,
-            threads
-        )
-    } else {
-        format!(
-            "[distorted][ref]libvmaf=log_fmt='json':eof_action=endall:log_path={}{}:n_threads={}",
-            ffmpeg::escape_path_in_filter(stat_file),
-            if disable_motion {
-                ":model='version=vmaf_v0.6.1\\:motion.motion_force_zero=true'"
+    // 【使用相对路径的最终方案】
+    let mut model_part = String::new();
+
+    if let Some(user_model) = model {
+        let mut model_options = Vec::new();
+
+        if user_model.contains('/') || user_model.contains('\\') || user_model.contains('.') {
+            // 是路径，尝试转换为相对路径以避免驱动器号问题
+            let model_path = Path::new(user_model);
+            let final_path_str = if model_path.is_absolute() {
+                // 如果是绝对路径，尝试计算相对路径
+                let current_dir = env::current_dir().expect("Failed to get current directory");
+                pathdiff::diff_paths(model_path, &current_dir)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| user_model.to_string()) // 如果无法计算，则回退到原始路径
             } else {
-                ""
-            },
-            threads
-        )
-    };
+                // 已经是相对路径
+                user_model.to_string()
+            };
+
+            // 将所有反斜杠替换为正斜杠
+            let safe_path = final_path_str.replace('\\', "/");
+            model_options.push(format!("path={}", safe_path));
+        } else {
+            // 是内建选项
+            model_options.push(user_model.to_string());
+        }
+
+        if disable_motion {
+            model_options.push("motion.motion_force_zero=true".to_string());
+        }
+
+        model_part = format!(":model='{}'", model_options.join(":"));
+    } else if disable_motion {
+        model_part = format!(":model='version=vmaf_v0.6.1:motion.motion_force_zero=true'");
+    }
+
+    let vmaf = format!(
+        "[distorted][ref]libvmaf=log_fmt='json':eof_action=endall:log_path={}{}:n_threads={}",
+        ffmpeg::escape_path_in_filter(stat_file.as_ref()),
+        model_part,
+        threads
+    );
 
     let mut source_pipe = if let [cmd, args @ ..] = reference_pipe_cmd {
         let mut source_pipe = Command::new(cmd);
@@ -410,11 +411,11 @@ pub fn run_vmaf(
 
     if !output.status.success() {
         return Err(Box::new(EncoderCrash {
-            exit_status:        output.status,
+            exit_status: output.status,
             source_pipe_stderr: String::new().into(),
             ffmpeg_pipe_stderr: None,
-            stderr:             output.stderr.into(),
-            stdout:             String::new().into(),
+            stderr: output.stderr.into(),
+            stdout: String::new().into(),
         }));
     }
 
@@ -427,7 +428,7 @@ pub fn run_vmaf_weighted(
     reference_pipe_cmd: &[impl AsRef<OsStr>],
     vspipe_args: Vec<String>,
     stat_file: impl AsRef<Path>,
-    model: Option<impl AsRef<Path>>,
+    model: Option<&str>,
     _res: &str,
     _scaler: &str,
     sample_rate: usize,
@@ -466,36 +467,37 @@ pub fn run_vmaf_weighted(
         filter.push(',');
     }
 
-    let model_str = if let Some(model) = model {
-        if model.as_ref().as_os_str() == "vmaf_v0.6.1neg.json" {
-            format!(
-                "version=vmaf_v0.6.1neg{}",
-                if disable_motion {
-                    "\\:motion.motion_force_zero=true"
-                } else {
-                    ""
-                }
-            )
-        } else {
-            format!(
-                "path={}{}",
-                ffmpeg::escape_path_in_filter(&model),
-                if disable_motion {
-                    "\\:motion.motion_force_zero=true"
-                } else {
-                    ""
-                }
-            )
-        }
-    } else {
-        format!(
-            "version=vmaf_v0.6.1{}",
-            if disable_motion {
-                "\\:motion.motion_force_zero=true"
+    // 【使用相对路径的最终方案】
+    let model_str = if let Some(user_model) = model {
+        let mut model_options = Vec::new();
+        if user_model.contains('/') || user_model.contains('\\') || user_model.contains('.') {
+            let model_path = Path::new(user_model);
+            let final_path_str = if model_path.is_absolute() {
+                let current_dir = env::current_dir().expect("Failed to get current directory");
+                pathdiff::diff_paths(model_path, &current_dir)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| user_model.to_string())
             } else {
-                ""
-            }
-        )
+                user_model.to_string()
+            };
+
+            let safe_path = final_path_str.replace('\\', "/");
+            model_options.push(format!("path={}", safe_path));
+        } else {
+            model_options.push(user_model.to_string());
+        }
+
+        if disable_motion {
+            model_options.push("motion.motion_force_zero=true".to_string());
+        }
+        model_options.join(":")
+    } else {
+        // 默认模型
+        if disable_motion {
+            "version=vmaf_v0.6.1:motion.motion_force_zero=true".to_string()
+        } else {
+            "version=vmaf_v0.6.1".to_string()
+        }
     };
 
     let mut source_pipe = if let [cmd, args @ ..] = reference_pipe_cmd {
@@ -537,13 +539,13 @@ pub fn run_vmaf_weighted(
          n_threads={}:n_subsample=1:model='{}':eof_action=endall[vmaf_v_out]",
         ffmpeg::escape_path_in_filter(&vmaf_y_path),
         threads,
-        model_str,
+        &model_str,
         ffmpeg::escape_path_in_filter(&vmaf_u_path),
         threads,
-        model_str,
+        &model_str,
         ffmpeg::escape_path_in_filter(&vmaf_v_path),
         threads,
-        model_str
+        &model_str
     );
 
     cmd.arg(filter_complex);
@@ -583,9 +585,7 @@ pub fn run_vmaf_weighted(
         frames: weighted_scores
             .iter()
             .map(|&score| Metrics {
-                metrics: VmafScore {
-                    vmaf: score
-                },
+                metrics: VmafScore { vmaf: score },
             })
             .collect(),
     };

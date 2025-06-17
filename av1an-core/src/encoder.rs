@@ -93,17 +93,23 @@ impl Encoder {
     #[inline]
     pub fn compose_1_1_pass(self, params: Vec<String>, output: String) -> Vec<String> {
         match self {
-            Self::aom => chain!(into_array!["aomenc", "--passes=1"], params, into_array![
-                "-o", output, "-"
-            ],)
+            Self::aom => chain!(
+                into_array!["aomenc", "--passes=1"],
+                params,
+                into_array!["-o", output, "-"],
+            )
             .collect(),
-            Self::rav1e => chain!(into_array!["rav1e", "-", "-y"], params, into_array![
-                "--output", output
-            ])
+            Self::rav1e => chain!(
+                into_array!["rav1e", "-", "-y"],
+                params,
+                into_array!["--output", output]
+            )
             .collect(),
-            Self::vpx => chain!(into_array!["vpxenc", "--passes=1"], params, into_array![
-                "-o", output, "-"
-            ])
+            Self::vpx => chain!(
+                into_array!["vpxenc", "--passes=1"],
+                params,
+                into_array!["-o", output, "-"]
+            )
             .collect(),
             Self::svt_av1 => chain!(
                 into_array!["SvtAv1EncApp", "-i", "stdin", "--progress", "2"],
@@ -117,9 +123,11 @@ impl Encoder {
                 into_array!["-", "-o", output]
             )
             .collect(),
-            Self::x265 => chain!(into_array!["x265", "--y4m"], params, into_array![
-                "--input", "-", "-o", output
-            ])
+            Self::x265 => chain!(
+                into_array!["x265", "--y4m"],
+                params,
+                into_array!["--input", "-", "-o", output]
+            )
             .collect(),
         }
     }
@@ -288,10 +296,9 @@ impl Encoder {
             // is not actually the desired pixel format.
             Encoder::aom => {
                 let defaults: Vec<String> = into_vec![
-                    "--threads=8",
-                    "--cpu-used=6",
                     "--end-usage=q",
-                    "--cq-level=30",
+                    "--min-q=1",
+                    "--max-q=63",
                     "--disable-kf",
                     "--kf-max-dist=9999"
                 ];
@@ -418,7 +425,7 @@ impl Encoder {
     #[inline]
     pub const fn get_default_cq_range(self) -> (usize, usize) {
         match self {
-            Self::aom | Self::vpx => (15, 55),
+            Self::aom | Self::vpx => (1, 63),
             Self::rav1e => (50, 140),
             Self::svt_av1 => (15, 50),
             Self::x264 | Self::x265 => (15, 35),

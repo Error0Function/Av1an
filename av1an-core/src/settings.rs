@@ -18,23 +18,15 @@ use crate::{
     parse::valid_params,
     target_quality::TargetQuality,
     vapoursynth::{
-        is_bestsource_installed,
-        is_dgdecnv_installed,
-        is_ffms2_installed,
-        is_lsmash_installed,
+        is_bestsource_installed, is_dgdecnv_installed, is_ffms2_installed, is_lsmash_installed,
     },
     vmaf::validate_libvmaf,
-    ChunkMethod,
-    ChunkOrdering,
-    Input,
-    ScenecutMethod,
-    SplitMethod,
-    Verbosity,
+    ChunkMethod, ChunkOrdering, Input, ScenecutMethod, SplitMethod, Verbosity,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct PixelFormat {
-    pub format:    Pixel,
+    pub format: Pixel,
     pub bit_depth: usize,
 }
 
@@ -47,60 +39,60 @@ pub enum InputPixelFormat {
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 pub struct EncodeArgs {
-    pub input:       Input,
-    pub temp:        String,
+    pub input: Input,
+    pub temp: String,
     pub output_file: String,
 
-    pub chunk_method:          ChunkMethod,
-    pub chunk_order:           ChunkOrdering,
-    pub scaler:                String,
-    pub scenes:                Option<PathBuf>,
-    pub split_method:          SplitMethod,
-    pub sc_pix_format:         Option<Pixel>,
-    pub sc_method:             ScenecutMethod,
-    pub sc_only:               bool,
-    pub sc_downscale_height:   Option<usize>,
-    pub extra_splits_len:      Option<usize>,
-    pub min_scene_len:         usize,
-    pub force_keyframes:       Vec<usize>,
+    pub chunk_method: ChunkMethod,
+    pub chunk_order: ChunkOrdering,
+    pub scaler: String,
+    pub scenes: Option<PathBuf>,
+    pub split_method: SplitMethod,
+    pub sc_pix_format: Option<Pixel>,
+    pub sc_method: ScenecutMethod,
+    pub sc_only: bool,
+    pub sc_downscale_height: Option<usize>,
+    pub extra_splits_len: Option<usize>,
+    pub min_scene_len: usize,
+    pub force_keyframes: Vec<usize>,
     pub ignore_frame_mismatch: bool,
 
     pub max_tries: usize,
 
-    pub passes:              u8,
-    pub video_params:        Vec<String>,
-    pub tiles:               (u32, u32), /* tile (cols, rows) count; log2 will be applied later
-                                          * for specific encoders */
-    pub encoder:             Encoder,
-    pub workers:             usize,
+    pub passes: u8,
+    pub video_params: Vec<String>,
+    pub tiles: (u32, u32), /* tile (cols, rows) count; log2 will be applied later
+                            * for specific encoders */
+    pub encoder: Encoder,
+    pub workers: usize,
     pub set_thread_affinity: Option<usize>,
-    pub photon_noise:        Option<u8>,
-    pub photon_noise_size:   (Option<u32>, Option<u32>), // Width and Height
-    pub chroma_noise:        bool,
-    pub zones:               Option<PathBuf>,
+    pub photon_noise: Option<u8>,
+    pub photon_noise_size: (Option<u32>, Option<u32>), // Width and Height
+    pub chroma_noise: bool,
+    pub zones: Option<PathBuf>,
 
     // FFmpeg params
     pub ffmpeg_filter_args: Vec<String>,
-    pub audio_params:       Vec<String>,
-    pub input_pix_format:   InputPixelFormat,
-    pub output_pix_format:  PixelFormat,
+    pub audio_params: Vec<String>,
+    pub input_pix_format: InputPixelFormat,
+    pub output_pix_format: PixelFormat,
 
-    pub verbosity:   Verbosity,
-    pub log_file:    PathBuf,
-    pub log_level:   LevelFilter,
-    pub resume:      bool,
-    pub keep:        bool,
-    pub force:       bool,
+    pub verbosity: Verbosity,
+    pub log_file: PathBuf,
+    pub log_level: LevelFilter,
+    pub resume: bool,
+    pub keep: bool,
+    pub force: bool,
     pub no_defaults: bool,
-    pub tile_auto:   bool,
+    pub tile_auto: bool,
 
-    pub concat:         ConcatMethod,
+    pub concat: ConcatMethod,
     pub target_quality: Option<TargetQuality>,
-    pub vmaf:           bool,
-    pub vmaf_path:      Option<PathBuf>,
-    pub vmaf_res:       String,
-    pub vmaf_threads:   Option<usize>,
-    pub vmaf_filter:    Option<String>,
+    pub vmaf: bool,
+    pub vmaf_path: Option<String>,
+    pub vmaf_res: String,
+    pub vmaf_threads: Option<usize>,
+    pub vmaf_filter: Option<String>,
 }
 
 impl EncodeArgs {
@@ -123,8 +115,22 @@ impl EncodeArgs {
             self.input
         );
 
-        if self.target_quality.is_some() {
+        if self.vmaf || self.target_quality.is_some() {
             validate_libvmaf()?;
+        }
+
+        if let Some(tq) = &self.target_quality {
+            // 如果 model 字段被设置，并且它看起来像一个文件路径，则检查其是否存在。
+            if let Some(model_str) = &tq.model {
+                if model_str.ends_with(".json") {
+                    let model_path = Path::new(model_str);
+                    ensure!(
+                        model_path.exists(),
+                        "VMAF model file not found: {:?}",
+                        model_path
+                    );
+                }
+            }
         }
 
         if which::which("ffmpeg").is_err() {
@@ -190,10 +196,6 @@ impl EncodeArgs {
             );
         }
 
-        if let Some(vmaf_path) = &self.target_quality.as_ref().and_then(|tq| tq.model.as_ref()) {
-            ensure!(vmaf_path.exists());
-        }
-
         if let Some(target_quality) = &self.target_quality {
             if target_quality.probes < 4 {
                 eprintln!(
@@ -201,7 +203,7 @@ impl EncodeArgs {
                 );
             }
 
-            ensure!(target_quality.min_q >= 1);
+            ensure!(target_quality.min_q >= 0);
         }
 
         let encoder_bin = self.encoder.bin();

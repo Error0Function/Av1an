@@ -8,14 +8,15 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Result};
-use itertools::Itertools;
 use nom::{
     branch::alt,
-    bytes::complete::{tag, take_till, take_while},
-    character::complete::{char, digit1, space1},
+    bytes::complete::{tag, take_while1},
+    character::complete::{char, digit1, space0, space1},
     combinator::{map, map_res, opt, recognize, rest},
-    multi::{many1, separated_list0},
-    sequence::{preceded, tuple},
+    error::Error as NomError,
+    multi::separated_list0,
+    sequence::{preceded, terminated},
+    IResult, Parser,
 };
 use serde::{Deserialize, Serialize};
 
@@ -28,63 +29,98 @@ use crate::{
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Scene {
-    pub start_frame:    usize,
-    // Reminding again that end_frame is *exclusive*
-    pub end_frame:      usize,
+    pub start_frame: usize,
+    pub end_frame: usize,
     pub zone_overrides: Option<ZoneOptions>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ZoneOptions {
-    pub encoder:          Encoder,
-    pub passes:           u8,
-    pub video_params:     Vec<String>,
-    pub photon_noise:     Option<u8>,
+    pub encoder: Encoder,
+    pub passes: u8,
+    pub video_params: Vec<String>,
+    pub photon_noise: Option<u8>,
     pub extra_splits_len: Option<usize>,
-    pub min_scene_len:    usize,
+    pub min_scene_len: usize,
 }
+
+type ParseResult<'a, O> = IResult<&'a str, O, NomError<&'a str>>;
+
+// ======================== 辅助解析器 ========================
+
+fn parse_number(i: &str) -> ParseResult<isize> {
+    map_res(recognize((opt(char('-')), digit1)), |s: &str| s.parse()).parse(i)
+}
+
+fn parse_encoder(i: &str) -> ParseResult<Encoder> {
+    map_res(
+        alt((
+            tag("aom"),
+            tag("rav1e"),
+            tag("x264"),
+            tag("x265"),
+            tag("vpx"),
+            tag("svt-av1"),
+        )),
+        Encoder::from_str,
+    )
+    .parse(i)
+}
+
+fn parse_cli_arg(i: &str) -> ParseResult<(&str, Option<&str>)> {
+    let key_parser = recognize((
+        alt((tag("--"), tag("-"))),
+        take_while1(|c: char| c.is_alphanumeric() || c == '-'),
+    ));
+
+    let value_parser = opt(preceded(
+        alt((tag("="), space1)),
+        take_while1(|c: char| !c.is_whitespace()),
+    ));
+
+    (key_parser, value_parser).parse(i)
+}
+
+// ======================== 重写后的主函数 ========================
 
 impl Scene {
     pub fn parse_from_zone(input: &str, context: &Av1anContext) -> Result<Self> {
-        let (_, (start, _, end, _, encoder, reset, zone_args)): (
-            _,
-            (usize, _, usize, _, Encoder, bool, &str),
-        ) = tuple::<_, _, nom::error::Error<&str>, _>((
-            map_res(digit1, str::parse),
-            many1(char(' ')),
-            map_res(alt((tag("-1"), digit1)), |res: &str| {
-                if res == "-1" {
-                    Ok(context.frames)
-                } else {
-                    res.parse::<usize>()
-                }
-            }),
-            many1(char(' ')),
-            map_res(
-                alt((
-                    tag("aom"),
-                    tag("rav1e"),
-                    tag("x264"),
-                    tag("x265"),
-                    tag("vpx"),
-                    tag("svt-av1"),
-                )),
-                Encoder::from_str,
-            ),
-            map(
-                opt(preceded(many1(char(' ')), tag("reset"))),
-                |res: Option<&str>| res.is_some(),
-            ),
-            map(
-                opt(preceded(many1(char(' ')), rest)),
-                |res: Option<&str>| res.unwrap_or_default().trim(),
-            ),
-        ))(input)
-        .map_err(|e| anyhow!("Invalid zone file syntax: {}", e))?;
-        if start >= end {
+        // --- 阶段1: 解析 zone 的基本信息 ---
+        let mut base_parser = (
+            terminated(parse_number, space1),
+            terminated(parse_number, space1),
+            terminated(parse_encoder, space0),
+            map(opt(terminated(tag("reset"), space0)), |r| r.is_some()),
+            rest,
+        );
+
+        let (_, (start_frame_raw, end_frame_raw, encoder, reset, zone_args_str)) =
+            base_parser.parse(input).map_err(|e: nom::Err<_>| {
+                anyhow!("Failed to parse zone definition: {}", e.to_string())
+            })?;
+
+        let zone_args = zone_args_str.trim();
+
+        // --- 验证和转换基本信息 (逻辑不变) ---
+        let total_frames = context.frames;
+        // 将 isize 转换为 usize，并处理 -1 的情况
+        let start_frame = if start_frame_raw < 0 {
+            bail!("Start frame cannot be negative.");
+        } else {
+            start_frame_raw as usize
+        };
+        let end_frame = if end_frame_raw == -1 {
+            total_frames
+        } else if end_frame_raw < 0 {
+            bail!("End frame cannot be negative (except for -1).");
+        } else {
+            end_frame_raw as usize
+        };
+
+        if start_frame >= end_frame {
             bail!("Start frame must be earlier than the end frame");
         }
-        if start >= context.frames || end > context.frames {
+        if start_frame >= total_frames || end_frame > total_frames {
             bail!("Start and end frames must not be past the end of the video");
         }
         if encoder.format() != context.args.encoder.format() {
@@ -110,7 +146,7 @@ impl Scene {
             }
         }
 
-        // Inherit from encode args or reset to defaults
+        // --- 阶段2: 解析 zone 的参数覆盖 (逻辑不变) ---
         let mut video_params = if reset {
             Vec::new()
         } else {
@@ -129,52 +165,56 @@ impl Scene {
         let mut extra_splits_len = context.args.extra_splits_len;
         let mut min_scene_len = context.args.min_scene_len;
 
-        // Parse overrides
-        let zone_args: (&str, Vec<(&str, Option<&str>)>) =
-            separated_list0::<_, _, _, nom::error::Error<&str>, _, _>(
-                space1,
-                tuple((
-                    recognize(tuple((
-                        alt((tag("--"), tag("-"))),
-                        take_till(|c| c == '=' || c == ' '),
-                    ))),
-                    opt(preceded(alt((space1, tag("="))), take_while(|c| c != ' '))),
-                )),
-            )(zone_args)
-            .map_err(|e| anyhow!("Invalid zone file syntax: {}", e))?;
-        let mut zone_args = zone_args.1.into_iter().collect::<HashMap<_, _>>();
-        if let Some(zone_passes) = zone_args.remove("--passes") {
-            passes = zone_passes.unwrap().parse().unwrap();
-        } else if [Encoder::aom, Encoder::vpx].contains(&encoder) && zone_args.contains_key("--rt")
-        {
+        let mut zone_args_map = {
+            let (remaining, parsed_args) =
+                separated_list0(space1, parse_cli_arg).parse(zone_args).map_err(
+                    |e: nom::Err<_>| anyhow!("Invalid zone override syntax: {}", e.to_string()),
+                )?;
+            if !remaining.trim().is_empty() {
+                bail!("Unrecognized zone arguments: {}", remaining);
+            }
+            parsed_args.into_iter().collect::<HashMap<_, _>>()
+        };
+
+        if let Some(zone_passes) = zone_args_map.remove("--passes") {
+            passes = zone_passes.unwrap().parse()?;
+        }
+        if [Encoder::aom, Encoder::vpx].contains(&encoder) && zone_args_map.contains_key("--rt") {
             passes = 1;
         }
-        if let Some(zone_photon_noise) = zone_args.remove("--photon-noise") {
-            photon_noise = Some(zone_photon_noise.unwrap().parse().unwrap());
+        if let Some(zone_photon_noise) = zone_args_map.remove("--photon-noise") {
+            photon_noise = Some(zone_photon_noise.unwrap().parse()?);
         }
-        if let Some(zone_xs) = zone_args.remove("-x").or_else(|| zone_args.remove("--extra-split"))
+        if let Some(zone_xs) =
+            zone_args_map.remove("-x").or_else(|| zone_args_map.remove("--extra-split"))
         {
-            extra_splits_len = Some(zone_xs.unwrap().parse().unwrap());
+            extra_splits_len = Some(zone_xs.unwrap().parse()?);
         }
-        if let Some(zone_min_scene_len) = zone_args.remove("--min-scene-len") {
-            min_scene_len = zone_min_scene_len.unwrap().parse().unwrap();
+        if let Some(zone_min_scene_len) = zone_args_map.remove("--min-scene-len") {
+            min_scene_len = zone_min_scene_len.unwrap().parse()?;
         }
+
         let raw_zone_args = if [Encoder::aom, Encoder::vpx].contains(&encoder) {
-            zone_args
+            zone_args_map
                 .into_iter()
                 .map(|(key, value)| {
                     value.map_or_else(|| key.to_string(), |value| format!("{key}={value}"))
                 })
                 .collect::<Vec<String>>()
         } else {
-            zone_args
-                .keys()
-                .map(|&k| Some(k.to_string()))
-                .interleave(zone_args.values().map(|v| v.map(std::string::ToString::to_string)))
-                .flatten()
+            zone_args_map
+                .into_iter()
+                .flat_map(|(key, value)| {
+                    let mut vec = vec![key.to_string()];
+                    if let Some(v) = value {
+                        vec.push(v.to_string());
+                    }
+                    vec
+                })
                 .collect::<Vec<String>>()
         };
 
+        // --- 验证参数 (逻辑不变) ---
         if !context.args.force {
             let help_text = {
                 let [cmd, arg] = encoder.help_command();
@@ -185,12 +225,8 @@ impl Scene {
                 .iter()
                 .filter_map(|param| {
                     if param.starts_with('-') && [Encoder::aom, Encoder::vpx].contains(&encoder) {
-                        // These encoders require args to be passed using an equal sign,
-                        // e.g. `--cq-level=30`
                         param.split('=').next()
                     } else {
-                        // The other encoders use a space, so we don't need to do extra splitting,
-                        // e.g. `--crf 30`
                         None
                     }
                 })
@@ -210,6 +246,7 @@ impl Scene {
             }
         }
 
+        // --- 合并参数 (逻辑不变) ---
         for arg in raw_zone_args {
             if arg.starts_with("--")
                 || (arg.starts_with('-') && arg.chars().nth(1).is_some_and(char::is_alphabetic))
@@ -235,8 +272,8 @@ impl Scene {
         }
 
         Ok(Self {
-            start_frame:    start,
-            end_frame:      end,
+            start_frame,
+            end_frame,
             zone_overrides: Some(ZoneOptions {
                 encoder,
                 passes,

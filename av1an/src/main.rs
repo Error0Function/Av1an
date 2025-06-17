@@ -586,7 +586,7 @@ pub struct CliOpts {
     ///
     /// If not specified, ffmpeg's default is used.
     #[clap(long, help_heading = "VMAF")]
-    pub vmaf_path: Option<PathBuf>,
+    pub vmaf_path: Option<String>,
 
     /// Resolution used for VMAF calculation
     ///

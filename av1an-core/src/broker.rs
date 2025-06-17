@@ -19,25 +19,16 @@ use tracing::{debug, error, trace, warn};
 
 use crate::{
     context::Av1anContext,
-    finish_progress_bar,
-    get_done,
-    progress_bar::{
-        dec_bar,
-        inc_mp_bar,
-        update_mp_chunk,
-        update_mp_msg,
-        update_progress_bar_estimates,
-    },
+    finish_progress_bar, get_done,
+    progress_bar::{dec_bar, update_mp_chunk, update_mp_msg, update_progress_bar_estimates},
     util::printable_base10_digits,
-    Chunk,
-    DoneChunk,
-    Instant,
+    Chunk, DoneChunk, Instant,
 };
 
 #[derive(Debug)]
 pub struct Broker<'a> {
     pub chunk_queue: Vec<Chunk>,
-    pub project:     &'a Av1anContext,
+    pub project: &'a Av1anContext,
 }
 
 #[derive(Clone)]
@@ -90,9 +81,9 @@ impl StringOrBytes {
 
 #[derive(Error, Debug)]
 pub struct EncoderCrash {
-    pub exit_status:        ExitStatus,
-    pub stdout:             StringOrBytes,
-    pub stderr:             StringOrBytes,
+    pub exit_status: ExitStatus,
+    pub stdout: StringOrBytes,
+    pub stderr: StringOrBytes,
     pub source_pipe_stderr: StringOrBytes,
     pub ffmpeg_pipe_stderr: Option<StringOrBytes>,
 }
@@ -213,56 +204,50 @@ impl Broker<'_> {
     ) -> Result<(), Option<Box<EncoderCrash>>> {
         let st_time = Instant::now();
 
-        // we display the index, so we need to subtract 1 to get the max index
         let padding = printable_base10_digits(self.chunk_queue.len() - 1) as usize;
         update_mp_chunk(worker_id, chunk.index, padding);
 
-        if let Some(ref tq) = self.project.args.target_quality {
-            update_mp_msg(
-                worker_id,
-                format!("Targeting Quality: {target}", target = tq.target),
-            );
-            tq.per_shot_target_quality_routine(chunk, Some(worker_id)).unwrap();
-
-            if tq.probe_slow && chunk.tq_cq.is_some() {
-                let optimal_q = chunk.tq_cq.unwrap();
-                let extension = match self.project.args.encoder {
-                    crate::encoder::Encoder::x264 => "264",
-                    crate::encoder::Encoder::x265 => "hevc",
-                    _ => "ivf",
-                };
-                let probe_file = std::path::Path::new(&self.project.args.temp).join("split").join(
-                    format!("v_{index:05}_{optimal_q}.{extension}", index = chunk.index),
+        if let Some(ref tq_params) = self.project.args.target_quality {
+            if chunk.tq_cq.is_none() {
+                update_mp_msg(
+                    worker_id,
+                    format!("Probing for target: {:.2}", tq_params.target),
                 );
 
-                if probe_file.exists() {
-                    let encode_dir = std::path::Path::new(&self.project.args.temp).join("encode");
-                    std::fs::create_dir_all(&encode_dir).unwrap();
-                    let output_file =
-                        encode_dir.join(format!("{index:05}.{extension}", index = chunk.index));
-                    std::fs::copy(&probe_file, &output_file).unwrap();
+                let save_callback = |c: &Chunk| {
+                    if let Err(e) = crate::save_single_chunk_update(&self.project.args.temp, c) {
+                        warn!(
+                            "Failed to save intermediate probe state for chunk {}: {}",
+                            c.index, e
+                        );
+                    }
+                };
 
-                    inc_mp_bar(chunk.frames() as u64);
-
-                    let progress_file = Path::new(&self.project.args.temp).join("done.json");
-                    get_done().done.insert(chunk.name(), DoneChunk {
-                        frames:     chunk.frames(),
-                        size_bytes: output_file.metadata().unwrap().len(),
-                    });
-
-                    let mut progress_file = File::create(progress_file).unwrap();
-                    progress_file
-                        .write_all(serde_json::to_string(get_done()).unwrap().as_bytes())
-                        .unwrap();
-
-                    update_progress_bar_estimates(
-                        chunk.frame_rate,
-                        self.project.frames,
-                        self.project.args.verbosity,
-                        (get_done().done.len() as u32, total_chunks),
-                    );
-
-                    return Ok(());
+                match tq_params.per_shot_target_quality(chunk, Some(worker_id), save_callback) {
+                    Ok(cq) => {
+                        chunk.tq_cq = Some(cq);
+                        if let Err(e) =
+                            crate::save_single_chunk_update(&self.project.args.temp, chunk)
+                        {
+                            warn!(
+                                "Failed to save final probe result for chunk {}: {}",
+                                chunk.index, e
+                            );
+                        }
+                    },
+                    Err(e) => {
+                        error!(
+                            "[chunk {}] Target quality probing failed: {}",
+                            chunk.index, e
+                        );
+                        return Err(Some(Box::new(EncoderCrash {
+                            exit_status: std::process::ExitStatus::default(),
+                            stdout: "Probing failed.".to_string().into(),
+                            stderr: e.to_string().into(),
+                            source_pipe_stderr: "".to_string().into(),
+                            ffmpeg_pipe_stderr: None,
+                        })));
+                    },
                 }
             }
         }
@@ -322,13 +307,16 @@ impl Broker<'_> {
         let fps = chunk.frames() as f64 / enc_time.as_secs_f64();
 
         let progress_file = Path::new(&self.project.args.temp).join("done.json");
-        get_done().done.insert(chunk.name(), DoneChunk {
-            frames:     chunk.frames(),
-            size_bytes: Path::new(&chunk.output())
-                .metadata()
-                .expect("Unable to get size of finished chunk")
-                .len(),
-        });
+        get_done().done.insert(
+            chunk.name(),
+            DoneChunk {
+                frames: chunk.frames(),
+                size_bytes: Path::new(&chunk.output())
+                    .metadata()
+                    .expect("Unable to get size of finished chunk")
+                    .len(),
+            },
+        );
 
         let mut progress_file = File::create(progress_file).unwrap();
         progress_file

@@ -21,6 +21,7 @@ fn test_chunk_name_1() {
         encoder:               Encoder::x264,
         noise_size:            (None, None),
         ignore_frame_mismatch: false,
+        probe_history:         None,
     };
     assert_eq!("00001", ch.name());
 }
@@ -43,6 +44,7 @@ fn test_chunk_name_10000() {
         encoder:               Encoder::x264,
         noise_size:            (None, None),
         ignore_frame_mismatch: false,
+        probe_history:         None,
     };
     assert_eq!("10000", ch.name());
 }
@@ -66,6 +68,7 @@ fn test_chunk_output() {
         encoder:               Encoder::x264,
         noise_size:            (None, None),
         ignore_frame_mismatch: false,
+        probe_history:         None,
     };
     assert_eq!("d/encode/00001.ivf", ch.output());
 }
@@ -89,6 +92,7 @@ fn test_chunk_frames() {
         encoder:               Encoder::x264,
         noise_size:            (None, None),
         ignore_frame_mismatch: false,
+        probe_history:         None,
     };
     assert_eq!(15, ch.frames());
 }
@@ -113,6 +117,7 @@ fn test_apply_photon_noise_args_with_noise() -> anyhow::Result<()> {
         encoder:               Encoder::svt_av1,
         noise_size:            (Some(1920), Some(1080)),
         ignore_frame_mismatch: false,
+        probe_history:         None,
     };
 
     ch.apply_photon_noise_args(Some(8), true)?;
@@ -140,6 +145,7 @@ fn test_apply_photon_noise_args_no_noise() -> anyhow::Result<()> {
         encoder:               Encoder::svt_av1,
         noise_size:            (None, None),
         ignore_frame_mismatch: false,
+        probe_history:         None,
     };
 
     ch.apply_photon_noise_args(None, false)?;
@@ -167,6 +173,7 @@ fn test_apply_photon_noise_args_unsupported_encoder() -> anyhow::Result<()> {
         encoder:               Encoder::x264,
         noise_size:            (Some(1920), Some(1080)),
         ignore_frame_mismatch: false,
+        probe_history:         None,
     };
 
     assert!(ch.apply_photon_noise_args(Some(8), true).is_err());
