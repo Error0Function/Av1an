@@ -32,6 +32,7 @@ pub struct TargetQuality {
     pub max_q: u32,
     pub encoder: Encoder,
     pub pix_format: Pixel,
+    pub probe_pix_format: Pixel,
     pub temp: String,
     pub workers: usize,
     pub video_params: Vec<String>,
@@ -259,7 +260,7 @@ impl TargetQuality {
             self.temp.clone(),
             chunk.index,
             q,
-            self.pix_format,
+            self.probe_pix_format,
             self.probing_rate,
             self.probing_speed,
             vmaf_threads,
@@ -440,6 +441,7 @@ impl TargetQuality {
                 self.vmaf_threads,
                 chunk.frame_rate,
                 disable_motion,
+                self.probe_pix_format,
             )
             .map_err(|e| {
                 Box::new(EncoderCrash {
@@ -464,6 +466,7 @@ impl TargetQuality {
                 self.vmaf_threads,
                 chunk.frame_rate,
                 disable_motion,
+                self.probe_pix_format,
             )?;
         }
 

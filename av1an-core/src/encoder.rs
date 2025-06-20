@@ -619,7 +619,11 @@ impl Encoder {
         threads: usize,
         q: usize,
         speed: Option<u8>, // 0-4
+        probe_pix_format: Pixel,
     ) -> Vec<Cow<'static, str>> {
+        // 从像素格式中解析出位深
+        let bit_depth = self.get_format_bit_depth(probe_pix_format).unwrap();
+
         match &self {
             Self::aom => inplace_vec![
                 "aomenc",
@@ -628,8 +632,7 @@ impl Encoder {
                 "--tile-columns=2",
                 "--tile-rows=1",
                 "--end-usage=q",
-                "-b",
-                "8",
+                format!("--bit-depth={}", bit_depth),
                 format!(
                     "--cpu-used={}",
                     (speed.unwrap_or(4) * MAXIMUM_SPEED_AOM / 4)
@@ -672,8 +675,7 @@ impl Encoder {
             ],
             Self::vpx => inplace_vec![
                 "vpxenc",
-                "-b",
-                "10",
+                format!("--bit-depth={}", bit_depth),
                 "--profile=2",
                 "--passes=1",
                 "--pass=1",
@@ -831,7 +833,7 @@ impl Encoder {
     ) -> Vec<Cow<'static, str>> {
         match &self {
             Self::aom => {
-                let mut cmd = inplace_vec!["aomenc", "--passes=1", format!("--cq-level={q}"),];
+                let mut cmd = inplace_vec!["aomenc", "--passes=1", "--end-usage=q", format!("--cq-level={q}"),];
                 if let Some(speed) = speed {
                     cmd.push(format!("--cpu-used={}", (speed * MAXIMUM_SPEED_AOM / 4)).into());
                 }
@@ -1002,7 +1004,7 @@ impl Encoder {
 
             ps
         } else {
-            self.construct_target_quality_command(vmaf_threads, q, probing_speed)
+            self.construct_target_quality_command(vmaf_threads, q, probing_speed, pix_fmt)
         };
 
         let output: Vec<Cow<str>> = match self {

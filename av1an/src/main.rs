@@ -522,8 +522,8 @@ pub struct CliOpts {
     pub concat: ConcatMethod,
 
     /// FFmpeg pixel format
-    #[clap(long, default_value = "yuv420p10le", help_heading = "Encoding")]
-    pub pix_format: Pixel,
+    #[clap(long, help_heading = "Encoding")]
+    pub pix_format: Option<Pixel>,
 
     /// Path to a file specifying zones within the video with differing encoder
     /// settings.
@@ -716,6 +716,7 @@ impl CliOpts {
         temp_dir: String,
         video_params: Vec<String>,
         output_pix_format: Pixel,
+        probe_pix_format: Pixel,
     ) -> anyhow::Result<Option<TargetQuality>> {
         self.target_quality
             .map(|tq| {
@@ -829,6 +830,7 @@ impl CliOpts {
                     max_q,
                     encoder: self.encoder,
                     pix_format: output_pix_format,
+                    probe_pix_format,
                     temp: temp_dir.clone(),
                     workers: self.workers,
                     video_params: video_params.clone(),
@@ -926,16 +928,53 @@ pub fn parse_cli(args: CliOpts) -> anyhow::Result<Vec<EncodeArgs>> {
         } else {
             Vec::new()
         };
-        let output_pix_format = PixelFormat {
-            format:    args.pix_format,
-            bit_depth: args.encoder.get_format_bit_depth(args.pix_format)?,
+
+        // 首先，获取源视频的像素格式作为我们的基准和默认值
+        let source_pix_format = match &input {
+            Input::Video { path } => ffmpeg::get_pixel_format(path.as_ref()).with_context(|| {
+                format!("FFmpeg failed to get pixel format for input video {path:?}")
+            })?,
+            Input::VapourSynth { path, .. } => {
+                // 对于 VapourSynth 脚本, 我们需要一个合理的默认值，因为直接获取可能很复杂
+                // 如果是10位或更高，倾向于yuv420p10le，否则yuv420p
+                let bit_depth = crate::vapoursynth::bit_depth(path.as_ref(), input.as_vspipe_args_map()?)?;
+                if bit_depth >= 10 {
+                    Pixel::YUV420P10LE
+                } else {
+                    Pixel::YUV420P
+                }
+            }
         };
 
+        // 场如果用户未指定 --pix-format, 最终输出格式使用源视频的格式
+        // 如果用户指定了 --pix-format, 最终输出格式使用用户指定的值
+        let final_output_pix_format = args.pix_format.unwrap_or(source_pix_format);
+
+        // 确定 VMAF 探测时使用的像素格式
+        let probe_pix_format = if args.pix_format.is_some() && args.vmaf_path.is_some() {
+            // 当 --pix-format 和 --vmaf-path 都被指定时，
+            // 探测和最终输出都使用用户提供的像素格式
+            final_output_pix_format
+        } else {
+            // 场景 1, 2, 3: 在所有其他情况下 (只指定一个或都不指定),
+            // VMAF 探测为了兼容性和稳定性，统一使用 yuv420p
+            Pixel::YUV420P
+        };
+
+        // 创建最终用于编码的 PixelFormat 结构体
+        let output_pix_format = PixelFormat {
+            format:    final_output_pix_format,
+            bit_depth: args.encoder.get_format_bit_depth(final_output_pix_format)?,
+        };
+
+        // 将 probe_pix_format 传递给 target_quality_params
         let target_quality = args.target_quality_params(
             temp.clone(),
             video_params.clone(),
             output_pix_format.format,
+            probe_pix_format,
         )?;
+
 
         // TODO make an actual constructor for this
         let arg = EncodeArgs {

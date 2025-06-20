@@ -279,6 +279,7 @@ pub fn plot(
         threads,
         60.0,
         false,
+        ::ffmpeg::format::Pixel::YUV420P,
     )?;
 
     plot_vmaf_score_file(&json_file, &plot_file).unwrap();
@@ -299,6 +300,7 @@ pub fn run_vmaf(
     threads: usize,
     framerate: f64,
     disable_motion: bool,
+    probe_pix_format: ::ffmpeg::format::Pixel,
 ) -> Result<(), Box<EncoderCrash>> {
     let mut filter = if sample_rate > 1 {
         format!(
@@ -390,16 +392,18 @@ pub fn run_vmaf(
     cmd.arg(encoded);
     cmd.args(["-r", &framerate.to_string(), "-i", "-", "-filter_complex"]);
 
+    let probe_pix_format_name = probe_pix_format.descriptor().unwrap().name();
     let distorted = format!(
-        "[0:v]scale={}:flags={}:force_original_aspect_ratio=decrease,setpts=PTS-STARTPTS,\
+        "[0:v]format={},scale={}:flags={}:force_original_aspect_ratio=decrease,setpts=PTS-STARTPTS,\
          setsar=1[distorted];",
-        &res, &scaler
+        probe_pix_format_name, &res, &scaler
     );
     let reference = format!(
-        "[1:v]{}scale={}:flags={}:force_original_aspect_ratio=decrease,setpts=PTS-STARTPTS,\
+        "[1:v]{}format={},scale={}:flags={}:force_original_aspect_ratio=decrease,setpts=PTS-STARTPTS,\
          setsar=1[ref];",
-        filter, &res, &scaler
+        filter, probe_pix_format_name, &res, &scaler
     );
+
 
     cmd.arg(format!("{distorted}{reference}{vmaf}"));
     cmd.args(["-f", "null", "-"]);
@@ -436,6 +440,7 @@ pub fn run_vmaf_weighted(
     threads: usize,
     framerate: f64,
     disable_motion: bool,
+    probe_pix_format: ::ffmpeg::format::Pixel,
 ) -> anyhow::Result<()> {
     let temp_dir = encoded.parent().unwrap();
     let vmaf_y_path = temp_dir.join(format!(
@@ -529,23 +534,21 @@ pub fn run_vmaf_weighted(
     cmd.arg(encoded);
     cmd.args(["-r", &framerate.to_string(), "-i", "-", "-filter_complex"]);
 
+    let probe_pix_format_name = probe_pix_format.descriptor().unwrap().name();
     let filter_complex = format!(
-        "[1:v]format=yuv420p[ref];[0:v]format=yuv420p[dis];\
+        "[1:v]format={probe_pix_format_name}[ref];[0:v]format={probe_pix_format_name}[dis];\
          [dis]extractplanes=y+u+v[dis_y][dis_u][dis_v];\
          [ref]extractplanes=y+u+v[ref_y][ref_u][ref_v];[dis_y][ref_y]libvmaf=log_path={}:\
-         log_fmt=json:n_threads={}:n_subsample=1:model='{}':eof_action=endall[vmaf_y_out];\
-         [dis_u][ref_u]libvmaf=log_path={}:log_fmt=json:n_threads={}:n_subsample=1:model='{}':\
+         log_fmt=json:n_threads={}:n_subsample=1:model='{model_str}':eof_action=endall[vmaf_y_out];\
+         [dis_u][ref_u]libvmaf=log_path={}:log_fmt=json:n_threads={}:n_subsample=1:model='{model_str}':\
          eof_action=endall[vmaf_u_out];[dis_v][ref_v]libvmaf=log_path={}:log_fmt=json:\
-         n_threads={}:n_subsample=1:model='{}':eof_action=endall[vmaf_v_out]",
+         n_threads={}:n_subsample=1:model='{model_str}':eof_action=endall[vmaf_v_out]",
         ffmpeg::escape_path_in_filter(&vmaf_y_path),
         threads,
-        &model_str,
         ffmpeg::escape_path_in_filter(&vmaf_u_path),
         threads,
-        &model_str,
         ffmpeg::escape_path_in_filter(&vmaf_v_path),
-        threads,
-        &model_str
+        threads
     );
 
     cmd.arg(filter_complex);
